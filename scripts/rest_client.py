@@ -14,6 +14,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import rapidjson
@@ -28,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger("ft_rest_client")
 
 
-class FtRestClient():
+class FtRestClient:
 
     def __init__(self, serverurl, username=None, password=None):
 
@@ -36,7 +37,7 @@ class FtRestClient():
         self._session = requests.Session()
         self._session.auth = (username, password)
 
-    def _call(self, method, apipath, params: dict = None, data=None, files=None):
+    def _call(self, method, apipath, params: Optional[dict] = None, data=None, files=None):
 
         if str(method).upper() not in ('GET', 'POST', 'PUT', 'DELETE'):
             raise ValueError(f'invalid method <{method}>')
@@ -60,13 +61,13 @@ class FtRestClient():
         except ConnectionError:
             logger.warning("Connection error")
 
-    def _get(self, apipath, params: dict = None):
+    def _get(self, apipath, params: Optional[dict] = None):
         return self._call("GET", apipath, params=params)
 
-    def _delete(self, apipath, params: dict = None):
+    def _delete(self, apipath, params: Optional[dict] = None):
         return self._call("DELETE", apipath, params=params)
 
-    def _post(self, apipath, params: dict = None, data: dict = None):
+    def _post(self, apipath, params: Optional[dict] = None, data: Optional[dict] = None):
         return self._call("POST", apipath, params=params, data=data)
 
     def start(self):
@@ -111,6 +112,30 @@ class FtRestClient():
         """
         return self._get("count")
 
+    def entries(self, pair=None):
+        """Returns List of dicts containing all Trades, based on buy tag performance
+        Can either be average for all pairs or a specific pair provided
+
+        :return: json object
+        """
+        return self._get("entries", params={"pair": pair} if pair else None)
+
+    def exits(self, pair=None):
+        """Returns List of dicts containing all Trades, based on exit reason performance
+        Can either be average for all pairs or a specific pair provided
+
+        :return: json object
+        """
+        return self._get("exits", params={"pair": pair} if pair else None)
+
+    def mix_tags(self, pair=None):
+        """Returns List of dicts containing all Trades, based on entry_tag + exit_reason performance
+        Can either be average for all pairs or a specific pair provided
+
+        :return: json object
+        """
+        return self._get("mix_tags", params={"pair": pair} if pair else None)
+
     def locks(self):
         """Return current locks
 
@@ -132,6 +157,20 @@ class FtRestClient():
         :return: json object
         """
         return self._get("daily", params={"timescale": days} if days else None)
+
+    def weekly(self, weeks=None):
+        """Return the profits for each week, and amount of trades.
+
+        :return: json object
+        """
+        return self._get("weekly", params={"timescale": weeks} if weeks else None)
+
+    def monthly(self, months=None):
+        """Return the profits for each month, and amount of trades.
+
+        :return: json object
+        """
+        return self._get("monthly", params={"timescale": months} if months else None)
 
     def edge(self):
         """Return information about edge.
@@ -176,8 +215,7 @@ class FtRestClient():
         return self._get("version")
 
     def show_config(self):
-        """
-        Returns part of the configuration, relevant for trading operations.
+        """ Returns part of the configuration, relevant for trading operations.
         :return: json object containing the version
         """
         return self._get("show_config")
@@ -231,6 +269,14 @@ class FtRestClient():
         """
         return self._delete(f"trades/{trade_id}")
 
+    def cancel_open_order(self, trade_id):
+        """Cancel open order for trade.
+
+        :param trade_id: Cancels open orders for this trade.
+        :return: json object
+        """
+        return self._delete(f"trades/{trade_id}/open-order")
+
     def whitelist(self):
         """Show the current whitelist.
 
@@ -261,14 +307,35 @@ class FtRestClient():
                 }
         return self._post("forcebuy", data=data)
 
-    def forcesell(self, tradeid):
-        """Force-sell a trade.
+    def forceenter(self, pair, side, price=None):
+        """Force entering a trade
+
+        :param pair: Pair to buy (ETH/BTC)
+        :param side: 'long' or 'short'
+        :param price: Optional - price to buy
+        :return: json object of the trade
+        """
+        data = {"pair": pair,
+                "side": side,
+                }
+        if price:
+            data['price'] = price
+        return self._post("forceenter", data=data)
+
+    def forceexit(self, tradeid, ordertype=None, amount=None):
+        """Force-exit a trade.
 
         :param tradeid: Id of the trade (can be received via status command)
+        :param ordertype: Order type to use (must be market or limit)
+        :param amount: Amount to sell. Full sell if not given
         :return: json object
         """
 
-        return self._post("forcesell", data={"tradeid": tradeid})
+        return self._post("forceexit", data={
+            "tradeid": tradeid,
+            "ordertype": ordertype,
+            "amount": amount,
+            })
 
     def strategies(self):
         """Lists available strategies
@@ -284,6 +351,13 @@ class FtRestClient():
         :return: json object
         """
         return self._get(f"strategy/{strategy}")
+
+    def pairlists_available(self):
+        """Lists available pairlist providers
+
+        :return: json object
+        """
+        return self._get("pairlists/available")
 
     def plot_config(self):
         """Return plot configuration if the strategy defines one.
@@ -312,18 +386,21 @@ class FtRestClient():
         :param limit: Limit result to the last n candles.
         :return: json object
         """
-        return self._get("pair_candles", params={
+        params = {
             "pair": pair,
             "timeframe": timeframe,
-            "limit": limit,
-        })
+        }
+        if limit:
+            params['limit'] = limit
+        return self._get("pair_candles", params=params)
 
-    def pair_history(self, pair, timeframe, strategy, timerange=None):
+    def pair_history(self, pair, timeframe, strategy, timerange=None, freqaimodel=None):
         """Return historic, analyzed dataframe
 
         :param pair: Pair to get data for
         :param timeframe: Only pairs with this timeframe available.
         :param strategy: Strategy to analyze and get values for
+        :param freqaimodel: FreqAI model to use for analysis
         :param timerange: Timerange to get data for (same format than --timerange endpoints)
         :return: json object
         """
@@ -331,6 +408,7 @@ class FtRestClient():
             "pair": pair,
             "timeframe": timeframe,
             "strategy": strategy,
+            "freqaimodel": freqaimodel,
             "timerange": timerange if timerange else '',
         })
 
@@ -340,6 +418,13 @@ class FtRestClient():
         :return: json object
         """
         return self._get("sysinfo")
+
+    def health(self):
+        """Provides a quick health check of the running bot.
+
+        :return: json object
+        """
+        return self._get("health")
 
 
 def add_arguments():
